@@ -75,10 +75,8 @@ type DnsController struct {
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
-	fixedDomainTtl map[string]int
-	// mutex protects the dnsCache.
-	dnsCacheMu          sync.Mutex
-	dnsCache            map[string]*DnsCache
+	fixedDomainTtl      map[string]int
+	dnsCache            sync.Map // map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
 }
@@ -120,8 +118,6 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
 		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsCacheMu:          sync.Mutex{},
-		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
 		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
 	}, nil
@@ -133,20 +129,14 @@ func (c *DnsController) cacheKey(qname string, qtype uint16) string {
 }
 
 func (c *DnsController) RemoveDnsRespCache(cacheKey string) {
-	c.dnsCacheMu.Lock()
-	_, ok := c.dnsCache[cacheKey]
-	if ok {
-		delete(c.dnsCache, cacheKey)
-	}
-	c.dnsCacheMu.Unlock()
+	c.dnsCache.Delete(cacheKey)
 }
 func (c *DnsController) LookupDnsRespCache(cacheKey string, ignoreFixedTtl bool) (cache *DnsCache) {
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	c.dnsCacheMu.Unlock()
+	v, ok := c.dnsCache.Load(cacheKey)
 	if !ok {
 		return nil
 	}
+	cache = v.(*DnsCache)
 	var deadline time.Time
 	if !ignoreFixedTtl {
 		deadline = cache.Deadline
@@ -256,22 +246,13 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 	deadline, originalDeadline := deadlineFunc(now, host)
 
 	cacheKey := c.cacheKey(fqdn, dnsTyp)
-	c.dnsCacheMu.Lock()
-	cache, ok := c.dnsCache[cacheKey]
-	if ok {
-		cache.Answer = answers
-		cache.Deadline = deadline
-		cache.OriginalDeadline = originalDeadline
-		c.dnsCacheMu.Unlock()
-	} else {
-		cache, err = c.newCache(fqdn, answers, deadline, originalDeadline)
-		if err != nil {
-			c.dnsCacheMu.Unlock()
-			return err
-		}
-		c.dnsCache[cacheKey] = cache
-		c.dnsCacheMu.Unlock()
+
+	cache, err := c.newCache(fqdn, answers, deadline, originalDeadline)
+	if err != nil {
+		return err
 	}
+	c.dnsCache.Store(cacheKey, cache)
+
 	if err = c.cacheAccessCallback(cache); err != nil {
 		return err
 	}

@@ -129,7 +129,7 @@ func Run(log *logrus.Logger, conf *config.Config, externGeoDataDirs []string) (e
 	_ = os.Remove(AbortFile)
 
 	// New ControlPlane.
-	c, err := newControlPlane(log, nil, nil, conf, externGeoDataDirs)
+	c, err := newControlPlane(log, nil, conf, externGeoDataDirs)
 	if err != nil {
 		return err
 	}
@@ -254,25 +254,20 @@ loop:
 
 			// New control plane.
 			obj := c.EjectBpf()
-			var dnsCache map[string]*control.DnsCache
-			if conf.Dns.IpVersionPrefer == newConf.Dns.IpVersionPrefer {
-				// Only keep dns cache when ip version preference not change.
-				dnsCache = c.CloneDnsCache()
-			}
 			// Stop old DNS listener before creating new one to avoid port conflicts
 			if err := c.StopDNSListener(); err != nil {
 				log.Warnf("[Reload] Failed to stop old DNS listener: %v", err)
 			}
-			
+
 			log.Warnln("[Reload] Load new control plane")
-			newC, err := newControlPlane(log, obj, dnsCache, newConf, externGeoDataDirs)
+			newC, err := newControlPlane(log, obj, newConf, externGeoDataDirs)
 			if err != nil {
 				reloadingErr = err
 				log.WithFields(logrus.Fields{
 					"err": err,
 				}).Errorln("[Reload] Failed to reload; try to roll back configuration")
 				// Load last config back.
-				newC, err = newControlPlane(log, obj, dnsCache, conf, externGeoDataDirs)
+				newC, err = newControlPlane(log, obj, conf, externGeoDataDirs)
 				if err != nil {
 					sdnotify.Stopping()
 					obj.Close()
@@ -327,7 +322,7 @@ loop:
 	return nil
 }
 
-func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*control.DnsCache, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
+func newControlPlane(log *logrus.Logger, bpf interface{}, conf *config.Config, externGeoDataDirs []string) (c *control.ControlPlane, err error) {
 	// Deep copy to prevent modification.
 	conf = deepcopy.Copy(conf).(*config.Config)
 
@@ -449,7 +444,6 @@ func newControlPlane(log *logrus.Logger, bpf interface{}, dnsCache map[string]*c
 	c, err = control.NewControlPlane(
 		log,
 		bpf,
-		dnsCache,
 		tagToNodeList,
 		conf.Group,
 		&conf.Routing,

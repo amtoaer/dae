@@ -40,7 +40,6 @@ import (
 	"github.com/daeuniverse/outbound/transport/grpc"
 	"github.com/daeuniverse/outbound/transport/meek"
 	dnsmessage "github.com/miekg/dns"
-	"github.com/mohae/deepcopy"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -83,7 +82,6 @@ type ControlPlane struct {
 func NewControlPlane(
 	log *logrus.Logger,
 	_bpf interface{},
-	dnsCache map[string]*DnsCache,
 	tagToNodeList map[string][]string,
 	groups []config.Group,
 	routingA *config.Routing,
@@ -475,31 +473,9 @@ func NewControlPlane(
 			deferFuncs = append(deferFuncs, plane.dnsListener.Stop)
 		}
 	}
-	// Refresh domain routing cache with new routing.
-	// FIXME: We temperarily disable it because we want to make change of DNS section take effects immediately.
-	// TODO: Add change detection.
-	if false && len(dnsCache) > 0 {
-		for cacheKey, cache := range dnsCache {
-			// Also refresh out-dated routing because kernel map items have no expiration.
-			lastDot := strings.LastIndex(cacheKey, ".")
-			if lastDot == -1 || lastDot == len(cacheKey)-1 {
-				// Not a valid key.
-				log.Warnln("Invalid cache key:", cacheKey)
-				continue
-			}
-			host := cacheKey[:lastDot]
-			_typ := cacheKey[lastDot+1:]
-			typ, err := strconv.ParseUint(_typ, 10, 16)
-			if err != nil {
-				// Unexpected.
-				return nil, err
-			}
-			_ = plane.dnsController.UpdateDnsCacheDeadline(host, uint16(typ), cache.Answer, cache.Deadline)
-		}
-	} else if _bpf != nil {
-		// Is reloading, and dnsCache == nil.
-		// Remove all map items.
-		// Normally, it is due to the change of ip version preference.
+	// On reload, clear all domain routing map items so stale entries do not
+	// persist across configuration changes.
+	if _bpf != nil {
 		var key [4]uint32
 		var val bpfDomainRouting
 		iter := core.bpf.DomainRoutingMap.Iterate()
@@ -569,12 +545,6 @@ func (c *ControlPlane) EjectBpf() *bpfObjects {
 
 func (c *ControlPlane) InjectBpf(bpf *bpfObjects) {
 	c.core.InjectBpf(bpf)
-}
-
-func (c *ControlPlane) CloneDnsCache() map[string]*DnsCache {
-	c.dnsController.dnsCacheMu.Lock()
-	defer c.dnsController.dnsCacheMu.Unlock()
-	return deepcopy.Copy(c.dnsController.dnsCache).(map[string]*DnsCache)
 }
 
 func (c *ControlPlane) dnsUpstreamReadyCallback(dnsUpstream *dns.Upstream) (err error) {
