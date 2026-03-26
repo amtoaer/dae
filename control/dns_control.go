@@ -208,48 +208,17 @@ func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err erro
 		ttl = minFirefoxCacheTtl
 	}
 
-	// Check req type.
+	// For A/AAAA records, set TTL = zero to force applications to resend every
+	// request. Note: this behaviour may not be defined in the standard.
 	switch q.Qtype {
 	case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-	default:
-		// Update DnsCache.
-		if err = c.updateDnsCache(msg, ttl, &q); err != nil {
-			return err
+		for i := range msg.Answer {
+			msg.Answer[i].Header().Ttl = 0
 		}
-		return nil
-	}
-
-	// Set ttl.
-	for i := range msg.Answer {
-		// Set TTL = zero. This requests applications must resend every request.
-		// However, it may be not defined in the standard.
-		msg.Answer[i].Header().Ttl = 0
-	}
-
-	// Check if request A/AAAA record.
-	var reqIpRecord bool
-loop:
-	for i := range msg.Question {
-		switch msg.Question[i].Qtype {
-		case dnsmessage.TypeA, dnsmessage.TypeAAAA:
-			reqIpRecord = true
-			break loop
-		}
-	}
-	if !reqIpRecord {
-		// Update DnsCache.
-		if err = c.updateDnsCache(msg, ttl, &q); err != nil {
-			return err
-		}
-		return nil
 	}
 
 	// Update DnsCache.
-	if err = c.updateDnsCache(msg, ttl, &q); err != nil {
-		return err
-	}
-	// Pack to get newData.
-	return nil
+	return c.updateDnsCache(msg, ttl, &q)
 }
 
 func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsmessage.Question) error {
