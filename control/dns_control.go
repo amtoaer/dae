@@ -237,9 +237,9 @@ func (c *DnsController) updateDnsCache(msg *dnsmessage.Msg, ttl uint32, q *dnsme
 	return nil
 }
 
-type daedlineFunc func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time)
+type deadlineFunc func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time)
 
-func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadlineFunc daedlineFunc) (err error) {
+func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadlineFunc deadlineFunc) (err error) {
 	var fqdn string
 	if strings.HasSuffix(host, ".") {
 		fqdn = strings.ToLower(host)
@@ -280,7 +280,7 @@ func (c *DnsController) __updateDnsCacheDeadline(host string, dnsTyp uint16, ans
 }
 
 func (c *DnsController) UpdateDnsCacheDeadline(host string, dnsTyp uint16, answers []dnsmessage.RR, deadline time.Time) (err error) {
-	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time) {
 		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
 			/// NOTICE: Cannot set TTL accurately.
 			if now.Sub(deadline).Seconds() > float64(fixedTtl) {
@@ -293,7 +293,7 @@ func (c *DnsController) UpdateDnsCacheDeadline(host string, dnsTyp uint16, answe
 }
 
 func (c *DnsController) UpdateDnsCacheTtl(host string, dnsTyp uint16, answers []dnsmessage.RR, ttl int) (err error) {
-	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (daedline time.Time, originalDeadline time.Time) {
+	return c.__updateDnsCacheDeadline(host, dnsTyp, answers, func(now time.Time, host string) (deadline time.Time, originalDeadline time.Time) {
 		originalDeadline = now.Add(time.Duration(ttl) * time.Second)
 		if fixedTtl, ok := c.fixedDomainTtl[host]; ok {
 			return now.Add(time.Duration(fixedTtl) * time.Second), originalDeadline
