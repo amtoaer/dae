@@ -1,7 +1,7 @@
 /*
 *  SPDX-License-Identifier: AGPL-3.0-only
 *  Copyright (c) 2022-2025, daeuniverse Organization <dae@v2raya.org>
-*/
+ */
 
 package control
 
@@ -301,7 +301,6 @@ type DoUDP struct {
 	dns.Upstream
 	netproxy.Dialer
 	dialArgument dialArgument
-	conn         netproxy.Conn
 }
 
 func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, error) {
@@ -313,6 +312,7 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 	if err != nil {
 		return nil, err
 	}
+	defer conn.Close()
 
 	timeout := 5 * time.Second
 	_ = conn.SetDeadline(time.Now().Add(timeout))
@@ -361,9 +361,6 @@ func (d *DoUDP) ForwardDNS(ctx context.Context, data []byte) (*dnsmessage.Msg, e
 }
 
 func (d *DoUDP) Close() error {
-	if d.conn != nil {
-		return d.conn.Close()
-	}
 	return nil
 }
 
