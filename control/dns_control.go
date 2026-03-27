@@ -75,10 +75,9 @@ type DnsController struct {
 	// timeoutExceedCallback is used to report this dialer is broken for the NetworkType
 	timeoutExceedCallback func(dialArgument *dialArgument, err error)
 
-	fixedDomainTtl      map[string]int
-	dnsCache            sync.Map // map[string]*DnsCache
-	dnsForwarderCacheMu sync.Mutex
-	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+	fixedDomainTtl    map[string]int
+	dnsCache          sync.Map // map[string]*DnsCache
+	dnsForwarderCache sync.Map // map[dnsForwarderKey]DnsForwarder
 }
 
 type handlingState struct {
@@ -117,9 +116,7 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		bestDialerChooser:     option.BestDialerChooser,
 		timeoutExceedCallback: option.TimeoutExceedCallback,
 
-		fixedDomainTtl:      option.FixedDomainTtl,
-		dnsForwarderCacheMu: sync.Mutex{},
-		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+		fixedDomainTtl: option.FixedDomainTtl,
 	}, nil
 }
 
@@ -581,17 +578,17 @@ func (c *DnsController) dialSend(invokingDepth int, req *udpRequest, data []byte
 	defer cancel()
 
 	// get forwarder from cache
-	c.dnsForwarderCacheMu.Lock()
-	forwarder, ok := c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}]
+	var forwarder DnsForwarder
+	key := dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}
+	v, ok := c.dnsForwarderCache.Load(key)
 	if !ok {
 		forwarder, err = newDnsForwarder(upstream, *dialArgument)
 		if err != nil {
-			c.dnsForwarderCacheMu.Unlock()
 			return err
 		}
-		c.dnsForwarderCache[dnsForwarderKey{upstream: upstream.String(), dialArgument: *dialArgument}] = forwarder
+		v, _ = c.dnsForwarderCache.LoadOrStore(key, forwarder)
 	}
-	c.dnsForwarderCacheMu.Unlock()
+	forwarder = v.(DnsForwarder)
 
 	defer func() {
 		if !connClosed {
