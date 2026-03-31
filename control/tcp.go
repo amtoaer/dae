@@ -46,7 +46,7 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	dst = common.ConvergeAddrPort(dst)
 
 	// Dial and relay.
-	rConn, err := c.RouteDialTcp(&RouteDialParam{
+	rConn, d, networkType, err := c.RouteDialTcp(&RouteDialParam{
 		Outbound:    consts.OutboundIndex(routingResult.Outbound),
 		Domain:      domain,
 		Mac:         routingResult.Mac,
@@ -57,11 +57,19 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 		Mark:        routingResult.Mark,
 	})
 	if err != nil {
+		if d != nil {
+			d.ReportUnavailable(networkType, err)
+			d.NotifyCheck()
+		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
 	}
 	defer rConn.Close()
 
 	if err = RelayTCP(sniffer, rConn); err != nil {
+		if d != nil {
+			d.ReportUnavailable(networkType, err)
+			d.NotifyCheck()
+		}
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"),
@@ -88,7 +96,7 @@ type RouteDialParam struct {
 	Mark        uint32
 }
 
-func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err error) {
+func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, d *dialer.Dialer, networkType *dialer.NetworkType, err error) {
 	routingResult := &bpfRoutingResult{
 		Mark:     p.Mark,
 		Must:     0,
@@ -112,7 +120,7 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	case consts.OutboundDirect:
 	case consts.OutboundControlPlaneRouting:
 		if outboundIndex, routingResult.Mark, _, err = c.Route(src, dst, domain, consts.L4ProtoType_TCP, routingResult); err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		routingResult.Outbound = uint8(outboundIndex)
 
@@ -132,20 +140,20 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	// TODO: Set-up ip to domain mapping and show domain if possible.
 	if int(outboundIndex) >= len(c.outbounds) {
 		if len(c.outbounds) == int(consts.OutboundUserDefinedMin) {
-			return nil, fmt.Errorf("traffic was dropped due to no-load configuration")
+			return nil, nil, nil, fmt.Errorf("traffic was dropped due to no-load configuration")
 		}
-		return nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
+		return nil, nil, nil, fmt.Errorf("outbound id from bpf is out of range: %v not in [0, %v]", outboundIndex, len(c.outbounds)-1)
 	}
 	outbound := c.outbounds[outboundIndex]
-	networkType := &dialer.NetworkType{
+	networkType = &dialer.NetworkType{
 		L4Proto:   consts.L4ProtoStr_TCP,
 		IpVersion: consts.IpVersionFromAddr(dst.Addr()),
 		IsDns:     false,
 	}
 	strictIpVersion := dialIp
-	d, _, err := outbound.Select(networkType, strictIpVersion)
+	d, _, err = outbound.Select(networkType, strictIpVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
+		return nil, nil, nil, fmt.Errorf("failed to select dialer from group %v (%v): %w", outbound.Name, networkType.String(), err)
 	}
 
 	if c.log.IsLevelEnabled(logrus.InfoLevel) {
@@ -164,7 +172,8 @@ func (c *ControlPlane) RouteDialTcp(p *RouteDialParam) (conn netproxy.Conn, err 
 	}
 	ctx, cancel := context.WithTimeout(context.TODO(), consts.DefaultDialTimeout)
 	defer cancel()
-	return d.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	conn, err = d.DialContext(ctx, common.MagicNetwork("tcp", routingResult.Mark, c.mptcp), dialTarget)
+	return conn, d, networkType, err
 }
 
 type WriteCloser interface {
