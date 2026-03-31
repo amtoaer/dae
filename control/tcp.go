@@ -58,20 +58,12 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	})
 	if err != nil {
 		if d != nil {
-			if strings.Contains(err.Error(), "connection refused") {
-				c.log.WithFields(logrus.Fields{
-					"dialer":  d.Property().Name,
-					"network": networkType.String(),
-					"err":     err,
-				}).Warnln("Dial failed with connection refused, marking dialer as unavailable and re-checking")
-				d.ReportUnavailable(networkType, err)
-			} else {
-				c.log.WithFields(logrus.Fields{
-					"dialer":  d.Property().Name,
-					"network": networkType.String(),
-					"err":     err,
-				}).Warnln("Dial failed, re-checking dialer")
-			}
+			c.log.WithFields(logrus.Fields{
+				"dialer":  d.Property().Name,
+				"network": networkType.String(),
+				"err":     err,
+			}).Warnln("Dial failed, marking dialer as unavailable and re-checking")
+			d.ReportUnavailable(networkType, err)
 			d.NotifyCheck()
 		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
