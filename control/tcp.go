@@ -58,7 +58,9 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	})
 	if err != nil {
 		if d != nil {
-			d.ReportUnavailable(networkType, err)
+			if strings.Contains(err.Error(), "connection refused") {
+				d.ReportUnavailable(networkType, err)
+			}
 			d.NotifyCheck()
 		}
 		return fmt.Errorf("failed to dial %v: %w", dst, err)
@@ -66,10 +68,6 @@ func (c *ControlPlane) handleConn(lConn net.Conn) (err error) {
 	defer rConn.Close()
 
 	if err = RelayTCP(sniffer, rConn); err != nil {
-		if d != nil {
-			d.ReportUnavailable(networkType, err)
-			d.NotifyCheck()
-		}
 		switch {
 		case strings.HasSuffix(err.Error(), "write: broken pipe"),
 			strings.HasSuffix(err.Error(), "i/o timeout"),
