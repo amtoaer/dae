@@ -59,6 +59,7 @@ type collection struct {
 	Latencies10       *LatenciesN
 	MovingAverage     time.Duration
 	Alive             bool
+	mu                sync.Mutex
 }
 
 func newCollection() *collection {
@@ -508,9 +509,10 @@ func (d *Dialer) RegisterAliveDialerSet(a *AliveDialerSet) {
 	if a == nil {
 		return
 	}
-	d.collectionFineMu.Lock()
-	d.mustGetCollection(a.CheckTyp).AliveDialerSetSet[a]++
-	d.collectionFineMu.Unlock()
+	c := d.mustGetCollection(a.CheckTyp)
+	c.mu.Lock()
+	c.AliveDialerSetSet[a]++
+	c.mu.Unlock()
 }
 
 // UnregisterAliveDialerSet is thread-safe.
@@ -518,80 +520,93 @@ func (d *Dialer) UnregisterAliveDialerSet(a *AliveDialerSet) {
 	if a == nil {
 		return
 	}
-	d.collectionFineMu.Lock()
-	defer d.collectionFineMu.Unlock()
-	setSet := d.mustGetCollection(a.CheckTyp).AliveDialerSetSet
+	c := d.mustGetCollection(a.CheckTyp)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	setSet := c.AliveDialerSetSet
 	setSet[a]--
 	if setSet[a] <= 0 {
 		delete(setSet, a)
 	}
 }
 
-func (d *Dialer) logUnavailable(
-	collection *collection,
+func (d *Dialer) updateCollectionState(
+	c *collection,
 	network *NetworkType,
+	alive bool,
+	latency time.Duration,
 	err error,
+	allowDup bool,
 ) {
-	// Append timeout if there is any error or unexpected status code.
-	if err != nil {
-		if strings.HasSuffix(err.Error(), "network is unreachable") {
-			err = fmt.Errorf("network is unreachable")
-		} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
-			strings.HasSuffix(err.Error(), "non-IPv4 address") {
-			err = fmt.Errorf("IPv%v is not supported", network.IpVersion)
-		}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// For failure scenarios: skip if already dead and duplicate updates are not allowed
+	if !alive && !allowDup && !c.Alive {
 		d.Log.WithFields(logrus.Fields{
 			"network": network.String(),
 			"node":    d.property.Name,
-			"err":     err.Error(),
-		}).Debugln("Connectivity Check Failed")
+		}).Debugln("Skip duplicate unavailable report for already dead node")
+		return
 	}
-	collection.Latencies10.AppendLatency(Timeout)
-	collection.MovingAverage = (collection.MovingAverage + Timeout) / 2
-	collection.Alive = false
-}
 
-func (d *Dialer) informDialerGroupUpdate(collection *collection) {
-	// Inform DialerGroups to update state.
-	// We use lock because AliveDialerSetSet is a reference of that in collection.
-	d.collectionFineMu.Lock()
-	for a := range collection.AliveDialerSetSet {
-		a.NotifyLatencyChange(d, collection.Alive)
+	if alive {
+		// Success scenario
+		c.Latencies10.AppendLatency(latency)
+		avg, _ := c.Latencies10.AvgLatency()
+		c.MovingAverage = (c.MovingAverage + latency) / 2
+		c.Alive = true
+
+		d.Log.WithFields(logrus.Fields{
+			"network": network.String(),
+			"node":    d.property.Name,
+			"last":    latency.Truncate(time.Millisecond).String(),
+			"avg_10":  avg.Truncate(time.Millisecond),
+			"mov_avg": c.MovingAverage.Truncate(time.Millisecond),
+		}).Debugln("Connectivity Check")
+	} else {
+		// Failure scenario (both check failed and dial failed)
+		if err != nil {
+			if strings.HasSuffix(err.Error(), "network is unreachable") {
+				err = fmt.Errorf("network is unreachable")
+			} else if strings.HasSuffix(err.Error(), "no suitable address found") ||
+				strings.HasSuffix(err.Error(), "non-IPv4 address") {
+				err = fmt.Errorf("IPv%v is not supported", network.IpVersion)
+			}
+			d.Log.WithFields(logrus.Fields{
+				"network": network.String(),
+				"node":    d.property.Name,
+				"err":     err.Error(),
+			}).Debugln("Connectivity Check Failed")
+		}
+		c.Latencies10.AppendLatency(Timeout)
+		c.MovingAverage = (c.MovingAverage + Timeout) / 2
+		c.Alive = false
 	}
-	d.collectionFineMu.Unlock()
+
+	// Inform DialerGroups to update state
+	for a := range c.AliveDialerSetSet {
+		a.NotifyLatencyChange(d, c.Alive)
+	}
 }
 
 func (d *Dialer) ReportUnavailable(typ *NetworkType, err error) {
 	collection := d.mustGetCollection(typ)
-	d.logUnavailable(collection, typ, err)
-	d.informDialerGroupUpdate(collection)
+	// allowDup=false: only update once when transitioning from alive to dead
+	d.updateCollectionState(collection, typ, false, 0, err, false)
 }
 
 func (d *Dialer) Check(opts *CheckOption) (ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.TODO(), Timeout)
 	defer cancel()
 	start := time.Now()
-	// Calc latency.
 	collection := d.mustGetCollection(opts.networkType)
 	if ok, err = opts.CheckFunc(ctx, opts.networkType); ok && err == nil {
-		// No error.
 		latency := time.Since(start)
-		collection.Latencies10.AppendLatency(latency)
-		avg, _ := collection.Latencies10.AvgLatency()
-		collection.MovingAverage = (collection.MovingAverage + latency) / 2
-		collection.Alive = true
-
-		d.Log.WithFields(logrus.Fields{
-			"network": opts.networkType.String(),
-			"node":    d.property.Name,
-			"last":    latency.Truncate(time.Millisecond).String(),
-			"avg_10":  avg.Truncate(time.Millisecond),
-			"mov_avg": collection.MovingAverage.Truncate(time.Millisecond),
-		}).Debugln("Connectivity Check")
+		d.updateCollectionState(collection, opts.networkType, true, latency, nil, true)
 	} else {
-		d.logUnavailable(collection, opts.networkType, err)
+		d.updateCollectionState(collection, opts.networkType, false, 0, err, true)
 	}
-	d.informDialerGroupUpdate(collection)
 	return ok, err
 }
 
