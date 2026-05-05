@@ -12,11 +12,12 @@ import (
 	"os"
 	"time"
 
+	_ "net/http/pprof"
+
 	"github.com/daeuniverse/dae/cmd"
 	"github.com/daeuniverse/dae/common/json"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/json-iterator/go/extra"
-	// _ "net/http/pprof"
 )
 
 func main() {
