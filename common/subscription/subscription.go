@@ -228,6 +228,21 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	}
 
 	if persistToFile {
+		if nodes, err = ResolveSubscriptionAsSIP008(log, b); err != nil {
+			log.Debugln(err)
+			nodes = ResolveSubscriptionAsBase64(log, b)
+		}
+		if len(nodes) == 0 {
+			log.Warnln("fetched subscription contains no valid nodes, try to read from file")
+			u.Host = "persist.d/" + tag + ".sub"
+			u.Path = ""
+			b, err = ResolveFile(u, configDir)
+			if err != nil {
+				return "", nil, err
+			}
+			goto resolve
+		}
+
 		path := filepath.Join(configDir, "persist.d")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			err := os.MkdirAll(path, 0700)
@@ -247,6 +262,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		if err != nil {
 			return "", nil, err
 		}
+		return tag, nodes, nil
 	}
 resolve:
 	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
