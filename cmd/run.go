@@ -1262,7 +1262,7 @@ func newControlPlaneWithMode(ctx context.Context, log *logrus.Logger, bpf any, d
 					subDialer = wrappedDialer
 				}
 				client := newHTTPClientForDialer(subDialer, 30*time.Second, conf.Global.SoMarkFromDae, conf.Global.Mptcp)
-				tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(s))
+				tag, nodes, err := subscription.ResolveSubscription(log, &client, filepath.Dir(cfgFile), string(s), conf.Global.SubscriptionUserAgent)
 				results <- subscriptionResult{
 					tag:   tag,
 					nodes: nodes,
