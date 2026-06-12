@@ -141,7 +141,20 @@ func ResolveFile(u *url.URL, configDir string) (b []byte, err error) {
 	return bytes.TrimSpace(b), err
 }
 
-func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string) (tag string, nodes []string, err error) {
+func parseUAFromFragment(fragment string) string {
+	for _, part := range strings.Split(fragment, "&") {
+		if strings.HasPrefix(part, "ua=") {
+			ua := strings.TrimPrefix(part, "ua=")
+			if decoded, err := url.QueryUnescape(ua); err == nil {
+				return decoded
+			}
+			return ua
+		}
+	}
+	return ""
+}
+
+func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir string, subscription string, globalUA string) (tag string, nodes []string, err error) {
 	/// Get tag.
 	tag, subscription = common.GetTagFromLinkLikePlaintext(subscription)
 
@@ -151,6 +164,19 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 		return tag, nil, fmt.Errorf("failed to parse subscription \"%v\": %w", subscription, err)
 	}
 	log.Debugf("ResolveSubscription: %v", subscription)
+
+	subscriptionUA := parseUAFromFragment(u.Fragment)
+	defaultUA := fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version)
+	userAgent := defaultUA
+	if globalUA != "" {
+		userAgent = globalUA
+	}
+	if subscriptionUA != "" {
+		userAgent = subscriptionUA
+	}
+	u.Fragment = ""
+	subscription = u.String()
+
 	var (
 		b    []byte
 		req  *http.Request
@@ -178,7 +204,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	if err != nil {
 		return "", nil, err
 	}
-	req.Header.Set("User-Agent", fmt.Sprintf("dae/%v (like v2rayA/1.0 WebRequestHelper) (like v2rayN/1.0 WebRequestHelper)", config.Version))
+	req.Header.Set("User-Agent", userAgent)
 	resp, err = client.Do(req)
 	if err != nil {
 		if persistToFile {
