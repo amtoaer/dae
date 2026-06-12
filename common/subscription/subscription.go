@@ -23,6 +23,7 @@ import (
 	"github.com/daeuniverse/dae/common"
 	"github.com/daeuniverse/dae/config"
 	"github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 )
 
 type sip008 struct {
@@ -41,6 +42,20 @@ type sip008Server struct {
 	Method     string `json:"method"`
 	Plugin     string `json:"plugin"`
 	PluginOpts string `json:"plugin_opts"`
+}
+
+type clashSubscription struct {
+	Proxies []clashProxy `yaml:"proxies"`
+}
+
+type clashProxy struct {
+	Name           string `yaml:"name"`
+	Type           string `yaml:"type"`
+	Server         string `yaml:"server"`
+	Port           any    `yaml:"port"`
+	Password       string `yaml:"password"`
+	SNI            string `yaml:"sni"`
+	SkipCertVerify bool   `yaml:"skip-cert-verify"`
 }
 
 func ResolveSubscriptionAsBase64(log *logrus.Logger, b []byte) (nodes []string) {
@@ -89,6 +104,62 @@ func ResolveSubscriptionAsSIP008(log *logrus.Logger, b []byte) (nodes []string, 
 			Fragment: server.Remarks,
 		}
 		nodes = append(nodes, u.String())
+	}
+	return nodes, nil
+}
+
+func ResolveSubscriptionAsClash(log *logrus.Logger, b []byte) (nodes []string, err error) {
+	log.Debugln("Try to resolve as clash")
+
+	var sub clashSubscription
+	if err = yaml.Unmarshal(b, &sub); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal yaml to clash")
+	}
+	if len(sub.Proxies) == 0 {
+		return nil, fmt.Errorf("does not seems like a clash subscription")
+	}
+
+	for _, proxy := range sub.Proxies {
+		switch strings.ToLower(proxy.Type) {
+		case "anytls":
+			var port string
+			switch p := proxy.Port.(type) {
+			case int:
+				port = strconv.Itoa(p)
+			case int64:
+				port = strconv.FormatInt(p, 10)
+			case float64:
+				port = strconv.FormatInt(int64(p), 10)
+			case string:
+				port = p
+			default:
+				continue
+			}
+			if proxy.Server == "" || port == "" || proxy.Password == "" {
+				continue
+			}
+
+			query := url.Values{}
+			if proxy.SNI != "" {
+				query.Set("sni", proxy.SNI)
+			}
+			if proxy.SkipCertVerify {
+				query.Set("insecure", "1")
+			}
+
+			u := url.URL{
+				Scheme:   "anytls",
+				User:     url.User(proxy.Password),
+				Host:     net.JoinHostPort(proxy.Server, port),
+				RawQuery: query.Encode(),
+				Fragment: proxy.Name,
+			}
+			nodes = append(nodes, u.String())
+		default:
+		}
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("no supported clash proxies found")
 	}
 	return nodes, nil
 }
@@ -208,7 +279,7 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	resp, err = client.Do(req)
 	if err != nil {
 		if persistToFile {
-			log.Warnln("failed to fetch subscription, try to read from file")
+			log.Warnf("failed to fetch subscription %q, try to read from file: %v", tag, err)
 			u.Host = "persist.d/" + tag + ".sub"
 			u.Path = ""
 			b, err = ResolveFile(u, configDir)
@@ -230,10 +301,13 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	if persistToFile {
 		if nodes, err = ResolveSubscriptionAsSIP008(log, b); err != nil {
 			log.Debugln(err)
-			nodes = ResolveSubscriptionAsBase64(log, b)
+			if nodes, err = ResolveSubscriptionAsClash(log, b); err != nil {
+				log.Debugln(err)
+				nodes = ResolveSubscriptionAsBase64(log, b)
+			}
 		}
 		if len(nodes) == 0 {
-			log.Warnln("fetched subscription contains no valid nodes, try to read from file")
+			log.Warnf("fetched subscription %q contains no valid nodes, try to read from file", tag)
 			u.Host = "persist.d/" + tag + ".sub"
 			u.Path = ""
 			b, err = ResolveFile(u, configDir)
@@ -266,6 +340,11 @@ func ResolveSubscription(log *logrus.Logger, client *http.Client, configDir stri
 	}
 resolve:
 	if nodes, err = ResolveSubscriptionAsSIP008(log, b); err == nil {
+		return tag, nodes, nil
+	} else {
+		log.Debugln(err)
+	}
+	if nodes, err = ResolveSubscriptionAsClash(log, b); err == nil {
 		return tag, nodes, nil
 	} else {
 		log.Debugln(err)
